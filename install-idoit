@@ -1,0 +1,522 @@
+#!/bin/bash
+# -*- coding: utf-8 -*-
+PATH="/bin:/usr/bin:/usr/sbin:$PATH"
+
+# The exit status of a pipeline is the exit status of the last command in the pipeline
+set -eo pipefail
+# script version weil ist so
+installer_version="0.0.2"
+
+print_idoit_logo() {
+echo -e "  ███                 █████           ███   █████                           "
+echo -e " ░░░                 ░░███           ░░░   ░░███                            "
+echo -e " ████              ███████   ██████  ████  ███████                          "
+echo -e "░░███  ██████████ ███░░███  ███░░███░░███ ░░░███░                           "
+echo -e " ░███ ░░░░░░░░░░ ░███ ░███ ░███ ░███ ░███   ░███                            "
+echo -e " ░███            ░███ ░███ ░███ ░███ ░███   ░███ ███                        "
+echo -e " █████           ░░████████░░██████  █████  ░░█████                         "
+echo -e "░░░░░             ░░░░░░░░  ░░░░░░  ░░░░░    ░░░░░                          "
+echo -e "                                                                            "
+echo -e "  ███                      █████              ████  ████                    "
+echo -e " ░░░                      ░░███              ░░███ ░░███                    "
+echo -e " ████  ████████    █████  ███████    ██████   ░███  ░███   ██████  ████████ "
+echo -e "░░███ ░░███░░███  ███░░  ░░░███░    ░░░░░███  ░███  ░███  ███░░███░░███░░███"
+echo -e " ░███  ░███ ░███ ░░█████   ░███      ███████  ░███  ░███ ░███████  ░███ ░░░ "
+echo -e " ░███  ░███ ░███  ░░░░███  ░███ ███ ███░░███  ░███  ░███ ░███░░░   ░███     "
+echo -e " █████ ████ █████ ██████   ░░█████ ░░████████ █████ █████░░██████  █████    "
+echo -e "░░░░░ ░░░░ ░░░░░ ░░░░░░     ░░░░░   ░░░░░░░░ ░░░░░ ░░░░░  ░░░░░░  ░░░░░     "
+echo -e "                                                                            "
+echo -e "                                                                            "
+}
+
+# Workflow
+# Display options via install_getopt function
+## Install
+### Download functions from GitHub
+#### Check os and save variables to $OS and $OS_VERSION_ID
+##### Download scrip for OS/Version and execute it
+
+#======== Needed VARIABLES
+TEMPDIR="$(mktemp -d -t idoit-install-XXXXXXXXXX)"
+USERINPUT="${1}"
+USERINPUT2="${2}"
+DEBUG=0
+LOGFILE="/tmp/idoit-install.log"
+#========
+github_user="MichaelOv"
+github_repo="install-idoit"
+github_branch="main"
+####### LETS GOOOOOOOOOOOOOOOOOOOOOO
+# Parse command-line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+    --test ) TEST=1 ;;
+    --debug ) DEBUG=1 ;;
+    --debugg ) DEBUG=2 ;;
+    --help )
+        install_getopt
+        exit_code 0
+        ;;
+    -* ) echo "Unknown parameter passed: $1" ;;
+    esac
+    shift
+done
+
+# set the debug mode when --debugg is USERINPUT
+if [ "$DEBUG" = 2 ]; then
+    set -x
+fi
+
+#TODO more options
+install_getopt() {
+    local USERINPUT=""
+    print_idoit_logo
+    echo -e "Usage: $0 [option]"
+    echo -e ""
+    echo -e "i-doit - Installer - Version ${installer_version}"
+    echo -e "https://i-doit.com"
+    echo -e ""
+    echo -e "Available commands"
+    echo -e "install\t\t| Install i-doit with newest version available."
+    echo -e "list\t\t| TODO List all supported operating systems."
+    echo -e "backup\t\t| TODO Creates a backup of the database and i-doit files"
+    echo -e "restore\t\t| TODO Restores a previous backup i-doit"
+    echo -e "cron\t\t| TODO Create i-doit cron jobs"
+}
+
+# Function to check the hardware requirements
+check_hardware_requirements() {
+    commandaction="Check hardware requirements"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    messages_separator
+    # Set the minimum CPU cores
+    MIN_CPU_CORES=2
+    # Set the minimum RAM in bytes
+    MIN_RAM=$((1024 * 1024 * 1024 * 2))
+    # Get the system architecture
+    arch=$(uname -m)
+    if [[ "$arch" != "x86_64" ]]; then
+        echo -e "Attention! The system architecture is not x86 64 bit, but ${arch}. This could cause unwanted behaviour."
+        exit_code=1
+    fi
+
+    # Get the number of CPU cores
+    cores=$(grep -c ^processor /proc/cpuinfo)
+    # TEST Set cores to 1 for testing
+    #cores=1
+
+    if [[ "$cores" -ge "$MIN_CPU_CORES" ]]; then
+        print_info "$MIN_CPU_CORES CPU cores are required."
+        print_ok "$cores CPU cores detected."
+        echo -e ""
+    else
+        echo -e "Less than ${bold}${green}$MIN_CPU_CORES${default} CPU cores detected."
+        echo -e "Found only ${bold}${red}$cores${default} CPU core.\nYour system does not meet the requirements. See:"
+        echo -e "    <https://kb.i-doit.com/display/en/System+Requirements>"
+        echo -e ""
+        print_fail
+        return 1
+    fi
+
+    # Get total RAM in bytes from /proc/meminfo
+    ram=$(vmstat --stats --unit b | grep -i "total memory" | awk '{print $1}')
+    # Get total RAM in gigabytes from /proc/meminfo
+    required_ram_in_gb="$(($MIN_RAM/1024/1024/1024))"
+    # TEST test ram
+    #ram=1147483648
+    # Convert bytes to GB
+    ram_in_gb=$(free -h | awk '/Mem:/ {print $2}' | sed 's/Gi//g')
+
+    if [[ "$ram" -ge "$MIN_RAM" ]]; then
+        print_info "$MIN_RAM byten total ($required_ram_in_gb GB) memory is required"
+        print_ok "$ram bytes ($ram_in_gb GB) of total memory detected."
+    else
+        echo -e "Less than ${bold}${green}$MIN_RAM ($required_ram_in_gb GB)${default} bytes of total memory detected."
+        echo -e "Found only ${bold}${red}$ram ($ram_in_gb GB)${default} bytes."
+        echo -e "Your system does not meet the requirements. See:"
+        echo -e ""
+        echo -e "    <https://kb.i-doit.com/display/en/System+Requirements>"
+        echo -e ""
+        print_fail
+        exit 1
+    fi
+    echo -e "------------------------------"
+    echo -e "${green}Completed!${default} ${bold}${green}${commandaction} ${default}"
+    echo ""
+}
+
+# Function to get the OS and version
+get_os_info() {
+    # Set the command action
+    commandaction="Detecting operating system"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    echo -e "${bold}==============================${default}"
+    if [ -f /etc/os-release ]; then
+        # shellcheck source=/dev/null
+        source /etc/os-release
+        OS=$ID
+        OS_VERSION_ID=$VERSION_ID
+        debug "Found /etc/os-release: OS=$OS, VERSION_ID=$OS_VERSION_ID"
+    elif [ -f /etc/redhat-release ]; then
+        OS="rhel"
+        VERSION_ID=$(sed 's/.*release \([0-9]*\).*/\1/' /etc/redhat-release)
+        debug "Found /etc/os-release: OS=$OS, VERSION_ID=$OS_VERSION_ID"
+    elif [ -f /etc/centos-release ]; then
+        OS="centos"
+        VERSION_ID=$(sed 's/.*release \([0-9]*\).*/\1/' /etc/centos-release)
+        debug "Found /etc/os-release: OS=$OS, VERSION_ID=$OS_VERSION_ID"
+    elif [ -f /etc/debian_version ]; then
+        OS="debian"
+        VERSION_ID=$(cat /etc/debian_version)
+        debug "Found /etc/os-release: OS=$OS, VERSION_ID=$OS_VERSION_ID"
+    elif command -v lsb_release >/dev/null 2>&1; then
+        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
+        VERSION_ID=$(lsb_release -sr)
+        debug "Found /etc/os-release: OS=$OS, VERSION_ID=$OS_VERSION_ID"
+    else
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        VERSION_ID=$(uname -r)
+        debug "Found /etc/os-release: OS=$OS, VERSION_ID=$OS_VERSION_ID"
+    fi
+    # TEST For testing OS
+    #OS=
+    #OS_VERSION_ID=
+    echo -e "[ ${cyan}INFO${default} ]${cyan} OS${default}: $OS"
+    echo -e "[ ${cyan}INFO${default} ]${cyan} Version${default}: $OS_VERSION_ID"
+    echo -e "------------------------------"
+    echo -e "${green}Completed!${default} ${bold}${green}${commandaction} ${default}"
+}
+
+# Function to deploy OS-specific script
+deploy_os_script() {
+    # Set the command action
+    commandaction="Deploying OS-specific script"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    messages_separator
+    local github_file_name=""
+    local remote_file_url="https://raw.githubusercontent.com/$github_user/$github_repo/$github_branch/"
+    # Determine which script to download based on the OS and version
+    case "$OS" in
+    ubuntu )
+        case "$OS_VERSION_ID" in
+        20.04 ) github_file_name="ubuntu_20.04.sh" ;;
+        22.04 ) github_file_name="ubuntu_22.04.sh" ;;
+        24.04 ) github_file_name="ubuntu_24.04.sh" ;;
+        *) echo -e "Unsupported Ubuntu version: $OS_VERSION_ID" ;;
+        esac
+        ;;
+    debian )
+        case "$OS_VERSION_ID" in
+        11 ) github_file_name="debian_11.sh" ;;
+        12 ) github_file_name="debian_12.sh" ;;
+        * ) echo -e "Unsupported Debian version: $OS_VERSION_ID" ;;
+        esac
+        ;;
+    rhel | centos ) github_file_name="rhel.sh" ;;
+    * ) echo -e "Unsupported operating system: $OS" ;;
+    esac
+    if [ "$TEST" = 1 ]; then
+        echo -e "[ ${cyan}INFO${default} ] ${commandaction} is running in TEST mode, using local file"
+        get_directory
+        os_specific_dir="$script_dir/os_specific"
+
+        cp "$os_specific_dir"/"$github_file_name" "$TEMPDIR"
+        execute_script "$TEMPDIR" "$github_file_name"
+    else
+        local dl_path="${remote_file_url}os_specific/$github_file_name"
+        fetch_file_github "$dl_path" "$TEMPDIR" "chmod" "run"
+
+        # check if $github_file_name exists in $tmpdir directory
+        if [ -f "$TEMPDIR/$github_file_name" ]; then
+            execute_script
+        # download the $github_file_name from $SCRIPT_URL to $TEMPDIR directory
+        else
+            fetch_file_github "$github_file_name" "$TEMPDIR" "chmod" "run"
+            #curlcmd=$(curl --connect-timeout 10 -s --fail -L -o "${$TEMPDIR}/${local_filename}" "${fileurl}" 2>&1)
+            #curl -O "$SCRIPT_URL" 2>/dev/null || echo -e "Failed to download the script from $SCRIPT_URL"
+            if [ -f "$TEMPDIR/$github_file_name" ]; then
+                debug "Setting execution right for: $github_file_name"
+                # chmod +x "${github_file_name}" use sudo if needed
+                if [ "$(whoami)" == "root" ]; then
+                    debug "Setting execution right for: $github_file_name"
+                    chmod +x "${github_file_name}"
+                else
+                    debug "Setting execution right with sudo for: $github_file_name"
+                    sudo chmod +x "${github_file_name}"
+                fi
+                execute_script
+            fi
+        fi
+    fi
+    
+}
+
+#===== utility
+# executes a script in path/ and debugs the output
+execute_script() {
+    PATH="$1"
+    SCRIPT_NAME="$2"
+    FULLPATH="$PATH/$SCRIPT_NAME"
+    debug "Pfad $FULLPATH"
+    if [ ! -f "$FULLPATH" ]; then
+        print_fail " File $FULLPATH not found"
+    fi
+    debug "Executing script: $FULLPATH"
+    . "$FULLPATH" || print_fail "Executing $SCRIPT_NAME failed"
+}
+
+# Function to get the directory
+get_directory() {
+    script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+}
+
+download_github_file() {
+    owner="MichaelOv"
+    repo="i-doit-install-v2"
+    branch="main"
+    local filepath=$1
+    local url="https://raw.githubusercontent.com/$owner/$repo/$branch/$filepath"
+    local save_path=${2:-}
+    local filename=$(basename "$filepath")
+    # set right to execute
+    chmodx="${3:-0}"
+    # execute
+    run="${4:-0}"
+    # check if file in dir does not exist
+    if [ ! -f "${save_path}" ]; then
+        # check if dir does not exist and create dir
+        #if [ ! -d "${local_file_dir}" ]; then
+            # create temp dir
+        #    mkdir -p "${local_file_dir}"
+        #fi
+        echo -en "Fetching file ${filepath} ...\c\n"
+        
+        curl --connect-timeout 10 -s --fail -L "$url" -o "$save_path/$filename" || echo $? & print_error "could not download ${save_path}"
+        local exit_code=$?
+        if [ $? -eq 0 ]; then
+            echo "Datei erfolgreich heruntergeladen: $save_path/$filename"
+        else
+            echo "Fehler beim Herunterladen der Datei"
+        fi
+
+        # Make the file executable if chmodx is set
+        if [ "${chmodx}" == "chmodx" ]; then
+            chmod +x "${local_file_dir}/${local_file_name}"
+        fi
+    fi
+
+    # check if file exist in dir
+    if [ -f "${local_file_dir}/${local_file_name}" ]; then
+        # Execute the file if run is set
+        if [ "${run}" == "run" ]; then
+            # shellcheck source=/dev/null
+            source "${local_file_dir}/${local_file_name}"
+        fi
+    fi
+}
+
+fetch_file_github() {
+    local github_file_name="${1}"
+    # download with token because of private repo
+    local remote_file_url="https://raw.githubusercontent.com/$github_user/$github_repo/$github_branch/$github_file_name"
+    local remote_file_url_name="GitHub"
+    local local_file_dir="${2}"
+    local local_file_name="${github_file_name}"
+    chmodx="${3:-0}"
+    run="${4:-0}"
+    # Passes vars to the file download module
+    fetch_get_file "${remote_file_url}" "${remote_file_url_name}" "${local_file_dir}" "${local_file_name}" "${chmodx}" "${run}"
+}
+
+# Get the functions file first
+get_function_file() {
+    local function_file="${1}"
+    local local_file_dir="${2}"
+    fetch_file_github "${function_file}" "${local_file_dir}" "chmodx" "run"
+}
+
+check_function_availability(){
+    github_file_name="functions.sh"
+    local_file_dir=$TEMPDIR
+    commandaction="Is functions file available?"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    echo -e "${bold}==============================${default}"
+    
+
+    if [ -f "${local_file_dir}/${github_file_name}" ]; then
+        echo -e "[ ${lightgreen}OK${default} ] Functions script already exists at $local_file_dir/$github_file_name"
+        # shellcheck disable=SC1090
+        source "${local_file_dir}/${github_file_name}"
+
+    elif [ -f "${script_dir}/${github_file_name}" ]; then
+        echo -e "[ ${lightgreen}OK${default} ] Functions script already exists at $script_dir/$github_file_name"
+        # shellcheck disable=SC1090
+        source "${script_dir}/${github_file_name}"
+    else
+        echo -e "[ ${cyan}Info${default} ] Downloading functions file"
+        get_function_file "functions.sh" "$TEMPDIR" "chmod" "run"
+        echo -e "[ ${lightgreen}OK${default} ] Functions file ${bold}${installer_version}${default} downloaded and sourced"
+    fi
+    echo -e "------------------------------"
+    echo -e "${green}Completed!${default} ${bold}${green}${commandaction} ${default}"
+}
+
+# checkk if root or sudo
+check_root() {
+    # Set the command action
+    commandaction="AM I ROOT?"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    echo -e "${bold}==============================${default}"
+
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "[ ${lightred}FAIL${default} ]${lightred} Script is not run as root or with sudo${default}"
+        exit_code=1
+        
+    else
+        echo -e "[ ${lightgreen}OK${default} ] Script is run with sudo or root privileges"
+        debug "Script is run as root."
+    fi
+    echo -e "------------------------------"
+    echo -e "${green}Completed!${default} ${bold}${green}${commandaction} ${default}"
+}
+
+# check if curl is installed
+check_curl(){
+    script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+    commandaction="Check if curl is installed"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    echo -e "${bold}==============================${default}"
+
+    # Check if curl is installed and if we are in test mode
+    if [ "$TEST" = 1 ]; then
+        # Check that curl is installed before doing anything
+        if [ "$(command -v curl 2>/dev/null)" ]; then
+            echo -e "[ ${lightgreen}OK${default} ] curl is installed"
+        else
+            echo -e "[ ${lightyellow}WARN${default} ] curl is not installed"
+            script_log "[ WARN ] curl is not installed, installing curl"
+            echo -e "[ ${cyan}Info${default} ] installing curl"
+            apt install curl -y 1&>/dev/null
+            echo -e "[ ${lightgreen}OK${default} ] curl is now installed"
+        fi
+    fi
+    echo -e "------------------------------"
+    echo -e "${green}Completed!${default} ${bold}${green}${commandaction} ${default}"
+}
+
+# Function to handle debug messages
+debug() {
+    if [ "$DEBUG" -eq 1 ]; then
+        echo "DEBUG: $1"
+        
+    fi
+}
+
+# function to handle exit and remove temp files
+cleanup() {
+    # Set the command action
+    commandaction="Cleanup"
+    echo -e ""
+    echo -e "${bold}${yellow}${commandaction}${default}"
+    echo -e "${bold}==============================${default}"
+    if [ -z "${NO_CLEANUP}" ] && [ -n "${TEMPDIR}" ]; then
+        cd || true
+        rm -rf "${TEMPDIR}"
+        echo -e "[ ${lightgreen}OK${default} ] Temporary i-doit install directory '${TEMPDIR}' deleted.${default}"
+    else
+        echo -e "[ ${red}FAIL${default} ] Temporary directory is not deleted.${default}"
+        return 1
+    fi
+    echo -e "------------------------------"
+    echo -e "${green}Completed!${default} ${bold}${green}${commandaction} ${default}"
+}
+
+# for logs
+script_log() {
+    if [ -n "${commandaction}" ]; then
+        echo -e "$(date '+%Y-%m-%d %H:%M:%S') | ${commandaction}: ${1}" >> "${LOGFILE}"
+    else
+        echo -e "$(date '+%Y-%m-%d %H:%M:%S') | ${1}" >> "${LOGFILE}"
+    fi
+}
+
+## Colors
+ansi_loader() {
+	creeol="\r"
+    default="\e[0m"
+    bold="\033[1m"
+    red="\e[31m"
+    lightred="\e[91m"
+    green="\e[32m"
+    lightgreen="\e[92m"
+    yellow="\e[33m"
+    lightyellow="\e[93m"
+    blue="\e[34m"
+    lightblue="\e[94m"
+    magenta="\e[35m"
+    lightmagenta="\e[95m"
+    cyan="\e[36m"
+    lightcyan="\e[96m"
+    creeol+="\033[K"
+}
+
+create_temp_dir() {
+    mktemp -d -t idoit-install-XXXXXXXXXX
+}
+
+ansi_loader
+# ======================================================================
+# execute
+case "$USERINPUT" in
+install )
+    echo -e "Installation of i-doit is selected"
+    echo -e "Lean back while i-doit is fully installed"
+    # Install i-doit automatically without user interactions
+        check_root
+        # create tempdir
+        create_temp_dir
+        # is curl installed?
+        check_curl
+        #get functions
+        check_function_availability
+        # check hardware
+        check_hardware_requirements
+        # check os and verison
+        get_os_info
+        # deploy os/version script and execute 
+        deploy_os_script
+        # execute_script
+        cleanup
+        echo ""
+        echo "THE END"
+    ;;
+list )
+    echo "Supported operating systems:"
+    echo "  - Ubuntu 20.04, 22.04, 24.04"
+    echo "  - Debian 11, 12"
+    echo "  - Red Hat Enterprise Linux 9"
+    ;;
+backup )
+    echo "TODO Creating a backup..."
+    # Insert backup logic here
+    ;;
+restore )
+    echo "TODO Restoring from backup..."
+    # Insert restore logic here
+    ;;
+cron )
+    echo "TODO Creating cron jobs..."
+    # Insert cron job creation logic here
+    ;;
+* )
+    # When no option is input display options
+    install_getopt
+    ;;
+esac
+
